@@ -36,6 +36,10 @@ class QuerierConfig:
     @property
     def url(self) -> str:
         return f"{self.scheme}://{self.address}:{self.port}/helloworld"
+    
+    @property
+    def travel_url(self) -> str:
+        return f"{self.scheme}://{self.address}:{self.port}/travel"
 
 
 class QuerierService:
@@ -54,28 +58,38 @@ class QuerierService:
 
     def start(self):
         self.stopped.clear()
-        thread = threading.Thread(target=self._loop_query_hello_world)
+        thread = threading.Thread(target=self._loop_query)
         thread.start()
 
     def stop(self):
         self.stopped.set()
 
-    def _loop_query_hello_world(self):
-        logger.info("[%s] start loop_query_hello_world to periodically request %s", self, self.config.url)
+    def _loop_query(self):
+        logger.info("[%s] start loop_query to periodically request %s", self, self.config.url)
 
         while not self.stopped.wait(INTERVAL):
+            # try:
+            #     self._query_hello_world()
+            # except Exception as e:
+            #     otel_logger.error("[query_hello_world] got error -> %s", e)
             try:
-                self._query_hello_world()
+                self._query_travel()
             except Exception as e:
-                otel_logger.error("[query_hello_world] got error -> %s", e)
+                otel_logger.error("[query_travel] got error -> %s", e)
 
-        logger.info("[%s] loop_query_hello_world stopped", self)
+        logger.info("[%s] loop_query stopped", self)
 
     def _query_hello_world(self):
         with self.tracer.start_as_current_span("caller/query_hello_world"):
             otel_logger.info("[query_hello_world] send request")
             response = requests.get(self.config.url)
             otel_logger.info("[query_hello_world] received: %s", response.text)
+    
+    def _query_travel(self):
+        with self.tracer.start_as_current_span("caller/travel"):
+            otel_logger.info("[query_travel] send request")
+            response = requests.get(self.config.travel_url)
+            otel_logger.info("[query_travel] received: %s", response.text)
 
     def __str__(self):
         return "querier"

@@ -165,3 +165,4 @@ cython_debug/
 pre-*-bkcodeai
 bkcodeai.json
 .python-version
+.vscode

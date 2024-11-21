@@ -14,10 +14,13 @@ import random
 import threading
 import time
 from dataclasses import dataclass
-from typing import Iterable, Tuple
+from typing import Iterable, Tuple, List
 
 from flask import Flask, Request, request
+
 from opentelemetry import metrics, trace
+from opentelemetry.propagate import inject, extract
+from opentelemetry.context import get_current
 from opentelemetry.instrumentation.flask import FlaskInstrumentor
 from opentelemetry.metrics import CallbackOptions, Observation
 from opentelemetry.sdk.trace import Span, Status, StatusCode
@@ -39,6 +42,158 @@ class ServerConfig:
 
 class APIException(Exception):
     status_code = 500
+
+
+class TravelHandler:
+    COUNTRIES = [
+        "United States",
+        "Canada",
+        "United Kingdom",
+        "Germany",
+        "France",
+        "Japan",
+        "Australia",
+        "China",
+        "India",
+        "Brazil",
+    ]
+    ERROR_RATE = 0.1
+    SLEEP_RATE = 0.2
+    CUSTOM_ERROR_MESSAGES = [
+        "mysql connect timeout",
+        "user not found",
+        "network unreachable",
+        "file not found",
+    ]
+    def __init__(self, service_name: str):
+        self.tracer = trace.get_tracer(service_name)
+        self.meter = metrics.get_meter(service_name)
+
+        # counter
+        # 计算 visit 函数调用次数
+        self.visit_requests_total = self.meter.create_counter(
+            "visit_requests_total",
+            description="Total number of HTTP requests",
+        )
+
+        # histogram
+        # 计算 visit 函数耗时
+        self.visit_execute_duration_seconds = self.meter.create_histogram(
+            "visit_execute_duration_seconds",
+            unit="s",
+            description="visit function execute duration in seconds",
+        )
+        # 计算 parallel_visit 函数耗时
+        self.parallel_visit_execute_duration_seconds = self.meter.create_histogram(
+            "parallel_visit_execute_duration_seconds",
+            unit="s",
+            description="parallel visit function execute duration in seconds",
+        )
+        # 计算 serial_visit 函数耗时
+        self.serial_visit_execute_duration_seconds = self.meter.create_histogram(
+            "serial_visit_execute_duration_seconds",
+            unit="s",
+            description="serial visit function execute duration in seconds",
+        )
+
+    def visit_handle(self) -> str:
+        # 不自动设置异常状态和记录异常，以展示手动设置方法 (traces_random_error_demo)
+        with self.tracer.start_as_current_span(
+            "travel/visit_handle", record_exception=False, set_status_on_exception=False
+        ):
+            self.logs_demo(request)
+            self.countries = self.choice_countries()
+            otel_logger.info("get countries -> %s", self.countries)
+
+            self.parallel_visit()
+
+            self.serial_visit()
+
+            return "Travel Success"
+    
+    def choice_countries(self) -> List[str]:
+        return random.sample(self.COUNTRIES, 3)
+    
+    @staticmethod
+    def logs_demo(req: Request):
+        otel_logger.info("received request: %s %s", req.method, req.path)
+    
+    def parallel_task(self, country, trace_context):
+        context_content = extract(trace_context)
+        with self.tracer.start_as_current_span("travel/parallel_task", context=context_content) as span:
+            self.visit2(country)
+
+    def visit2(self, country: str):
+        start_time = time.time()
+        with self.tracer.start_as_current_span("travel/visit2") as span:
+            self.visit_requests_total.add(1, {"country": country})
+            random_value = random.random()
+
+            if random_value < self.ERROR_RATE:
+                try:
+                    error_message = random.choice(self.CUSTOM_ERROR_MESSAGES)
+                    raise APIException(error_message)
+                except APIException as e:
+                    otel_logger.error("[traces_random_error_demo] got error -> %s", e)
+                    current_span: Span = trace.get_current_span()
+                    current_span.set_status(Status(StatusCode.ERROR, str(e)))
+                    current_span.record_exception(e)
+                    raise
+                finally:
+                    duration = time.time() - start_time
+                    self.visit_execute_duration_seconds.record(duration)
+            elif random_value < self.SLEEP_RATE:
+                time.sleep(random_value / 10)
+            
+            duration = time.time() - start_time
+            self.visit_execute_duration_seconds.record(duration)
+    
+    def visit1(self, country: str):
+        start_time = time.time()
+        with self.tracer.start_as_current_span("travel/visit1") as span:
+            self.visit_requests_total.add(1, {"country": country})
+            random_value = random.random()
+
+            if random_value < self.ERROR_RATE:
+                try:
+                    error_message = random.choice(self.CUSTOM_ERROR_MESSAGES)
+                    raise APIException(error_message)
+                except APIException as e:
+                    otel_logger.error("[traces_random_error_demo] got error -> %s", e)
+                    current_span: Span = trace.get_current_span()
+                    current_span.set_status(Status(StatusCode.ERROR, str(e)))
+                    current_span.record_exception(e)
+                    raise
+                finally:
+                    duration = time.time() - start_time
+                    self.visit_execute_duration_seconds.record(duration)
+            elif random_value < self.SLEEP_RATE:
+                time.sleep(random_value / 10)
+            
+            duration = time.time() - start_time
+            self.visit_execute_duration_seconds.record(duration)
+    
+    def parallel_visit(self):
+        with self.tracer.start_as_current_span("travel/parallel_visit") as span:
+            trace_context = {}
+            inject(trace_context, get_current())
+            otel_logger.info("parallel_visit start")
+            threads = []
+            for country in self.countries:
+                thread = threading.Thread(target=self.parallel_task, args=(country, trace_context))
+                threads.append(thread)
+                thread.start()
+            for thread in threads:
+                thread.join()
+            otel_logger.info("parallel_visit end")
+
+    def serial_visit(self):
+        with self.tracer.start_as_current_span("travel/serial_visit") as span:
+            otel_logger.info("serial_visit start")
+            for country in self.countries:
+                self.visit1(country)
+            otel_logger.info("serial_visit end")
+        
 
 
 class HelloWorldHandler:
@@ -197,7 +352,11 @@ class HttpService:
         FlaskInstrumentor().instrument_app(self.app)
 
         self.handler = HelloWorldHandler(service_name)
+        self.travel_handler = TravelHandler(service_name)
+
         self.app.add_url_rule("/helloworld", view_func=self.handler.handle)
+        self.app.add_url_rule("/travel", view_func=self.travel_handler.visit_handle)
+
         self.app.register_error_handler(APIException, self._error_handler)
 
     def start(self):
