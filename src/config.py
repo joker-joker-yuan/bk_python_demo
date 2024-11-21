@@ -20,7 +20,7 @@ class ExporterType(Enum):
 
 class Config:
     def __init__(self):
-        self.debug = self._get_env_bool("DEBUG", False)
+        self.debug = True
         self.token = os.getenv("TOKEN", "todo")
         self.service_name = os.getenv("SERVICE_NAME", "helloworld")
         self.otlp_endpoint = os.getenv("OTLP_ENDPOINT", "http://localhost:4317")
